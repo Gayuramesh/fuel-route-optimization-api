@@ -1,2 +1,3 @@
-# fuel-route-optimization-api
-Django REST API for route-based fuel stop optimization and fuel cost estimation using OpenRouteService and fuel price datasets.
+Fuel Route Optimization API
+
+A Django REST API that generates optimal fuel stops along a route, estimates fuel costs, and minimizes routing API usage through efficient route planning and caching strategies.
