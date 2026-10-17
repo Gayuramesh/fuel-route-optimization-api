@@ -16,43 +16,35 @@ OPENROUTE_API_KEY = os.getenv("OPENROUTE_API_KEY")
 # Load fuel station data with geocoded coordinates from CSV file
 fuel_df = pd.read_csv("fuel_stations_geocoded.csv")
 
+
 @lru_cache(maxsize=500)
 def geocode_location(location):
-    """
-    Convert a location name/address into latitude and longitude coordinates.
-    Uses OpenRouteService API for geocoding. Results are cached for performance.
-    
-    Args:
-        location (str): Location name, address, or city to geocode
-    
-    Returns:
-        tuple: (latitude, longitude) coordinates
-    """
-    # OpenRouteService geocoding API endpoint
+    """Convert a location into latitude and longitude coordinates."""
+    if not OPENROUTE_API_KEY:
+        raise RuntimeError("OpenRouteService API key is not configured.")
+
     url = "https://api.openrouteservice.org/geocode/search"
-    
-    headers = {
-        "Authorization": OPENROUTE_API_KEY,
-        "Content-Type": "application/json"
-    }
-    
-    # Make geocoding request
+
     response = requests.get(
         url,
-        headers=headers,
-        params={
-            "api_key": OPENROUTE_API_KEY,
-            "text": location,
-            "size": 1  # Return top result only
-        }
+        headers={
+            "Authorization": OPENROUTE_API_KEY,
+            "Content-Type": "application/json",
+        },
+        params={"text": location, "size": 1},
+        timeout=10,
     )
+    response.raise_for_status()
 
-    # Extract coordinates from response (GeoJSON format)
     data = response.json()
-    coordinates = data["features"][0]["geometry"]["coordinates"]
+    features = data.get("features", [])
 
-    # Return as (latitude, longitude) - GeoJSON returns (lon, lat) so swap them
-    return (coordinates[1], coordinates[0])
+    if not features:
+        raise ValueError(f"No location found for: {location}")
+
+    coordinates = features[0]["geometry"]["coordinates"]
+    return coordinates[1], coordinates[0]
+
 
 def get_route(start_lat, start_lon, end_lat, end_lon):
     """
