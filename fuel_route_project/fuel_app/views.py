@@ -75,5 +75,5 @@ class RouteFuelAPIView(APIView):
                 },
                 status=502,
             )
-
+        result = calculate_route_fuel_plan(start, finish)
         return Response(result)
