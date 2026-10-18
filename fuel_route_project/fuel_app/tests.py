@@ -99,8 +99,10 @@ class RouteFuelAPIViewTests(APITestCase):
         )
 
         response = self.view(request)
-
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["error"],
+            "No location found for: Unknown Place",
+        )
 
     @patch("fuel_app.views.calculate_route_fuel_plan")
     def test_unexpected_value_error_returns_500(self, mock_calculate):
