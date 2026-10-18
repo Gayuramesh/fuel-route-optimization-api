@@ -1,3 +1,5 @@
+# API views for the fuel route planning application
+
 import logging
 
 import requests
@@ -50,12 +52,15 @@ class RouteFuelAPIView(APIView):
             result = calculate_route_fuel_plan(start, finish)
 
         except LocationNotFoundError as exc:
+            # An unknown location is a client input error.
             return Response(
                 {"error": str(exc)},
                 status=400,
             )
 
         except requests.HTTPError as exc:
+            # Log provider HTTP errors without exposing credentials
+            # or the provider's raw response to the client.
             status_code = (
                 exc.response.status_code
                 if exc.response is not None
@@ -68,12 +73,7 @@ class RouteFuelAPIView(APIView):
             )
 
             return Response(
-                {
-                    "error": (
-                        "The routing provider could not "
-                        "process the request."
-                    )
-                },
+                {"error": "The routing provider could not process the request."},
                 status=502,
             )
 
@@ -81,33 +81,22 @@ class RouteFuelAPIView(APIView):
             logger.exception("Routing provider request failed")
 
             return Response(
-                {
-                    "error": (
-                        "The routing service is temporarily unavailable."
-                    )
-                },
+                {"error": "The routing service is temporarily unavailable."},
                 status=502,
             )
 
         except (KeyError, IndexError, TypeError):
-            logger.exception(
-                "Unexpected routing provider response"
-            )
+            logger.exception("Unexpected routing provider response")
 
             return Response(
-                {
-                    "error": (
-                        "Unable to calculate the route "
-                        "with the available data."
-                    )
-                },
+                {"error": "Unable to calculate the route with the available data."},
                 status=502,
             )
 
         except ValueError:
-            logger.exception(
-                "Unexpected value error while calculating the route"
-            )
+            # An unexpected ValueError is a server-side fault,
+            # not automatically an invalid client request.
+            logger.exception("Unexpected value error during route calculation")
 
             return Response(
                 {"error": "Unable to calculate the route."},
