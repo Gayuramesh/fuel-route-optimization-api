@@ -26,7 +26,6 @@ class RouteFuelAPIView(APIView):
         start = request.data.get("start")
         finish = request.data.get("finish")
 
-        # Preserve the existing response for missing locations.
         if not start or not finish:
             return Response(
                 {"error": "start and finish required"},
@@ -52,15 +51,12 @@ class RouteFuelAPIView(APIView):
             result = calculate_route_fuel_plan(start, finish)
 
         except LocationNotFoundError as exc:
-            # An unknown location is a client input error.
             return Response(
                 {"error": str(exc)},
                 status=400,
             )
 
         except requests.HTTPError as exc:
-            # Log provider HTTP errors without exposing credentials
-            # or the provider's raw response to the client.
             status_code = (
                 exc.response.status_code
                 if exc.response is not None
@@ -68,12 +64,26 @@ class RouteFuelAPIView(APIView):
             )
 
             logger.exception(
-                "Routing provider returned an HTTP error: %s",
+                "Routing provider HTTP error: %s",
                 status_code,
             )
 
+            if status_code is not None and 400 <= status_code < 500:
+                return Response(
+                    {"error": "The routing provider rejected the request."},
+                    status=400,
+                )
+
             return Response(
                 {"error": "The routing provider could not process the request."},
+                status=502,
+            )
+
+        except requests.Timeout:
+            logger.exception("Routing provider request timed out")
+
+            return Response(
+                {"error": "The routing service is temporarily unavailable."},
                 status=502,
             )
 
@@ -86,17 +96,19 @@ class RouteFuelAPIView(APIView):
             )
 
         except (KeyError, IndexError, TypeError):
-            logger.exception("Unexpected routing provider response")
+            logger.exception(
+                "Unexpected data error during route calculation"
+            )
 
             return Response(
-                {"error": "Unable to calculate the route with the available data."},
-                status=502,
+                {"error": "Unable to calculate the route."},
+                status=500,
             )
 
         except ValueError:
-            # An unexpected ValueError is a server-side fault,
-            # not automatically an invalid client request.
-            logger.exception("Unexpected value error during route calculation")
+            logger.exception(
+                "Unexpected value error during route calculation"
+            )
 
             return Response(
                 {"error": "Unable to calculate the route."},
