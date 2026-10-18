@@ -1,4 +1,260 @@
 import os
+from functools import lru_cache
+
+import pandas as pd
+import polyline
+import requests
+from dotenv import load_dotenv
+
+from .constants import (
+    MAX_RANGE_MILES,
+    VEHICLE_MPG,
+    NEAREST_STATION_COUNT,
+)
+from .utils import calculate_distance
+
+
+load_dotenv()
+
+OPENROUTE_API_KEY = os.getenv("OPENROUTE_API_KEY")
+
+fuel_df = pd.read_csv("fuel_stations_geocoded.csv")
+
+
+class LocationNotFoundError(ValueError):
+    """Raised when a location cannot be found by the geocoding provider."""
+
+
+class RoutingProviderError(Exception):
+    """Raised when the routing provider returns invalid data."""
+
+
+@lru_cache(maxsize=500)
+def geocode_location(location):
+    """Convert a location into latitude and longitude coordinates."""
+    if not OPENROUTE_API_KEY:
+        raise RuntimeError("OpenRouteService API key is not configured.")
+
+    url = "https://api.openrouteservice.org/geocode/search"
+
+    try:
+        response = requests.get(
+            url,
+            headers={
+                "Authorization": OPENROUTE_API_KEY,
+                "Content-Type": "application/json",
+            },
+            params={"text": location, "size": 1},
+            timeout=10,
+        )
+        response.raise_for_status()
+
+    except requests.RequestException:
+        raise
+
+    try:
+        data = response.json()
+        features = data.get("features", [])
+
+        if not features:
+            raise LocationNotFoundError(
+                f"No location found for: {location}"
+            )
+
+        coordinates = features[0]["geometry"]["coordinates"]
+
+        if len(coordinates) < 2:
+            raise RoutingProviderError(
+                "Geocoding provider returned invalid coordinates."
+            )
+
+        return coordinates[1], coordinates[0]
+
+    except (LocationNotFoundError, RoutingProviderError):
+        raise
+
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+        raise RoutingProviderError(
+            "Geocoding provider returned invalid data."
+        ) from exc
+
+
+def get_route(start_lat, start_lon, end_lat, end_lon):
+    """Get driving route data from OpenRouteService."""
+    if not OPENROUTE_API_KEY:
+        raise RuntimeError("OpenRouteService API key is not configured.")
+
+    url = "https://api.openrouteservice.org/v2/directions/driving-car"
+
+    headers = {
+        "Authorization": OPENROUTE_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "coordinates": [
+            [start_lon, start_lat],
+            [end_lon, end_lat],
+        ]
+    }
+
+    response = requests.post(
+        url,
+        json=payload,
+        headers=headers,
+        timeout=10,
+    )
+    response.raise_for_status()
+
+    try:
+        data = response.json()
+        routes = data.get("routes", [])
+
+        if not routes:
+            raise RoutingProviderError(
+                "Routing provider returned no routes."
+            )
+
+        route = routes[0]
+        summary = route["summary"]
+        geometry = route["geometry"]
+
+        if "distance" not in summary or not geometry:
+            raise RoutingProviderError(
+                "Routing provider returned incomplete route data."
+            )
+
+        return data
+
+    except RoutingProviderError:
+        raise
+
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+        raise RoutingProviderError(
+            "Routing provider returned invalid route data."
+        ) from exc
+
+
+def calculate_stop_points(route_points, total_distance):
+    """Calculate intermediate fuel stop locations along the route."""
+    if not route_points or total_distance <= 0:
+        return []
+
+    stop_points = []
+    stop_count = int(total_distance // MAX_RANGE_MILES)
+
+    for i in range(1, stop_count + 1):
+        mile_marker = i * MAX_RANGE_MILES
+        ratio = mile_marker / total_distance
+
+        index = int(ratio * len(route_points))
+        index = min(index, len(route_points) - 1)
+
+        stop_points.append(
+            {
+                "mile_marker": mile_marker,
+                "coordinate": route_points[index],
+            }
+        )
+
+    return stop_points
+
+
+def get_best_station(stop_lat, stop_lon, used_ids):
+    """Find the cheapest available nearby fuel station."""
+    df = fuel_df.copy()
+
+    df = df.dropna(subset=["Latitude", "Longitude"])
+
+    if df.empty:
+        raise ValueError("No fuel stations with valid coordinates are available.")
+
+    df["distance"] = df.apply(
+        lambda row: calculate_distance(
+            stop_lat,
+            stop_lon,
+            row["Latitude"],
+            row["Longitude"],
+        ),
+        axis=1,
+    )
+
+    nearby = df.nsmallest(NEAREST_STATION_COUNT, "distance")
+    nearby = nearby[
+        ~nearby["OPIS Truckstop ID"].isin(used_ids)
+    ]
+
+    if nearby.empty:
+        raise ValueError("No unused nearby fuel stations are available.")
+
+    valid_prices = nearby.dropna(subset=["Retail Price"])
+
+    if valid_prices.empty:
+        raise ValueError("No valid fuel prices are available for nearby stations.")
+
+    cheapest = valid_prices.loc[valid_prices["Retail Price"].idxmin()]
+
+    return cheapest
+
+
+def calculate_route_fuel_plan(start, finish):
+    """
+    Calculate an optimal fuel route plan.
+
+    Returns:
+        dict: Route distance, fuel consumption, fuel stops and estimated cost.
+    """
+    start_lat, start_lon = geocode_location(start)
+    end_lat, end_lon = geocode_location(finish)
+
+    route = get_route(start_lat, start_lon, end_lat, end_lon)
+    route_data = route["routes"][0]
+
+    distance_miles = route_data["summary"]["distance"] / 1609.34
+
+    route_points = polyline.decode(route_data["geometry"])
+
+    stop_points = calculate_stop_points(
+        route_points,
+        distance_miles,
+    )
+
+    fuel_stops = []
+    used_ids = set()
+    prices = []
+
+    for stop in stop_points:
+        lat, lon = stop["coordinate"]
+
+        station = get_best_station(lat, lon, used_ids)
+
+        station_id = station["OPIS Truckstop ID"]
+        used_ids.add(station_id)
+
+        fuel_price = float(station["Retail Price"])
+        prices.append(fuel_price)
+
+        fuel_stops.append(
+            {
+                "mile_marker": stop["mile_marker"],
+                "truckstop_name": station["Truckstop Name"],
+                "city": station["City"],
+                "state": station["State"],
+                "fuel_price": fuel_price,
+            }
+        )
+
+    gallons = distance_miles / VEHICLE_MPG
+    avg_price = sum(prices) / len(prices) if prices else 0
+    total_cost = round(gallons * avg_price, 2)
+
+    return {
+        "distance_miles": round(distance_miles, 2),
+        "fuel_required_gallons": round(gallons, 2),
+        "fuel_stops": fuel_stops,
+        "total_fuel_cost": total_cost,
+    }
+import os
 import pandas as pd
 import requests
 import polyline
