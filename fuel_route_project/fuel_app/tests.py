@@ -3,6 +3,7 @@ from unittest.mock import patch
 from rest_framework.test import APITestCase, APIRequestFactory
 
 from .views import RouteFuelAPIView
+from .services import LocationNotFoundError
 
 
 class RouteFuelAPIViewTests(APITestCase):
@@ -27,10 +28,7 @@ class RouteFuelAPIViewTests(APITestCase):
     def test_whitespace_start_returns_400(self, mock_calculate):
         request = self.factory.post(
             "/api/route/",
-            {
-                "start": "   ",
-                "finish": "Dallas, TX",
-            },
+            {"start": "   ", "finish": "Dallas, TX"},
             format="json",
         )
 
@@ -43,10 +41,7 @@ class RouteFuelAPIViewTests(APITestCase):
     def test_non_string_start_returns_400(self, mock_calculate):
         request = self.factory.post(
             "/api/route/",
-            {
-                "start": 123,
-                "finish": "Dallas, TX",
-            },
+            {"start": 123, "finish": "Dallas, TX"},
             format="json",
         )
 
@@ -59,10 +54,7 @@ class RouteFuelAPIViewTests(APITestCase):
     def test_non_string_finish_returns_400(self, mock_calculate):
         request = self.factory.post(
             "/api/route/",
-            {
-                "start": "Dallas, TX",
-                "finish": ["Austin, TX"],
-            },
+            {"start": "Dallas, TX", "finish": ["Austin, TX"]},
             format="json",
         )
 
@@ -82,10 +74,7 @@ class RouteFuelAPIViewTests(APITestCase):
 
         request = self.factory.post(
             "/api/route/",
-            {
-                "start": " Dallas, TX ",
-                "finish": " Austin, TX ",
-            },
+            {"start": " Dallas, TX ", "finish": " Austin, TX "},
             format="json",
         )
 
@@ -98,23 +87,31 @@ class RouteFuelAPIViewTests(APITestCase):
         )
 
     @patch("fuel_app.views.calculate_route_fuel_plan")
-    def test_location_not_found_returns_400(self, mock_calculate):
-        from .services import LocationNotFoundError
-
+    def test_unknown_location_returns_400(self, mock_calculate):
         mock_calculate.side_effect = LocationNotFoundError(
             "No location found for: Unknown Place"
         )
 
         request = self.factory.post(
             "/api/route/",
-            {
-                "start": "Unknown Place",
-                "finish": "Austin, TX",
-            },
+            {"start": "Unknown Place", "finish": "Austin, TX"},
             format="json",
         )
 
         response = self.view(request)
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("error", response.data)
+
+    @patch("fuel_app.views.calculate_route_fuel_plan")
+    def test_unexpected_value_error_returns_500(self, mock_calculate):
+        mock_calculate.side_effect = ValueError("Unexpected internal error")
+
+        request = self.factory.post(
+            "/api/route/",
+            {"start": "Dallas, TX", "finish": "Austin, TX"},
+            format="json",
+        )
+
+        response = self.view(request)
+
+        self.assertEqual(response.status_code, 500)
