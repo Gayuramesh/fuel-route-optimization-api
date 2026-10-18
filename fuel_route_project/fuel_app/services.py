@@ -16,6 +16,8 @@ OPENROUTE_API_KEY = os.getenv("OPENROUTE_API_KEY")
 # Load fuel station data with geocoded coordinates from CSV file
 fuel_df = pd.read_csv("fuel_stations_geocoded.csv")
 
+class LocationNotFoundError(Exception):
+    """Raised when a location cannot be found by the geocoding provider."""
 
 @lru_cache(maxsize=500)
 def geocode_location(location):
