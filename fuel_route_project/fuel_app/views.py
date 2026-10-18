@@ -1,10 +1,15 @@
-# API views for the fuel route planning application
+import logging
 
 import requests
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from .services import calculate_route_fuel_plan
+from .services import (
+    LocationNotFoundError,
+    calculate_route_fuel_plan,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class RouteFuelAPIView(APIView):
@@ -15,57 +20,80 @@ class RouteFuelAPIView(APIView):
     def post(self, request):
         """
         Calculate a fuel route plan using start and finish locations.
-
-        Returns:
-            400: If either location is missing or invalid.
-            502: If an external routing service fails.
-            200: If the route fuel plan is calculated successfully.
         """
         start = request.data.get("start")
         finish = request.data.get("finish")
 
-        # Validate the required locations
+        # Preserve the existing response for missing locations.
         if not start or not finish:
             return Response(
                 {"error": "start and finish required"},
                 status=400,
             )
 
-        # Validate start location
         if not isinstance(start, str) or not start.strip():
             return Response(
                 {"error": "A valid start location is required."},
                 status=400,
             )
 
-        # Validate finish location
         if not isinstance(finish, str) or not finish.strip():
             return Response(
                 {"error": "A valid finish location is required."},
                 status=400,
             )
 
-        # Remove leading and trailing whitespace
         start = start.strip()
         finish = finish.strip()
 
-        # Calculate the optimal fuel route plan
         try:
             result = calculate_route_fuel_plan(start, finish)
 
-        except ValueError as exc:
+        except LocationNotFoundError as exc:
             return Response(
                 {"error": str(exc)},
                 status=400,
             )
 
-        except requests.RequestException:
+        except requests.HTTPError as exc:
+            status_code = (
+                exc.response.status_code
+                if exc.response is not None
+                else None
+            )
+
+            logger.exception(
+                "Routing provider returned an HTTP error: %s",
+                status_code,
+            )
+
             return Response(
-                {"error": "The routing service is temporarily unavailable."},
+                {
+                    "error": (
+                        "The routing provider could not "
+                        "process the request."
+                    )
+                },
                 status=502,
             )
 
-        except (KeyError, IndexError):
+        except requests.RequestException:
+            logger.exception("Routing provider request failed")
+
+            return Response(
+                {
+                    "error": (
+                        "The routing service is temporarily unavailable."
+                    )
+                },
+                status=502,
+            )
+
+        except (KeyError, IndexError, TypeError):
+            logger.exception(
+                "Unexpected routing provider response"
+            )
+
             return Response(
                 {
                     "error": (
@@ -75,5 +103,15 @@ class RouteFuelAPIView(APIView):
                 },
                 status=502,
             )
-        result = calculate_route_fuel_plan(start, finish)
+
+        except ValueError:
+            logger.exception(
+                "Unexpected value error while calculating the route"
+            )
+
+            return Response(
+                {"error": "Unable to calculate the route."},
+                status=500,
+            )
+
         return Response(result)
