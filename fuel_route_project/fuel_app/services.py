@@ -42,7 +42,9 @@ def geocode_location(location):
     features = data.get("features", [])
 
     if not features:
-        raise ValueError(f"No location found for: {location}")
+        raise LocationNotFoundError(
+            f"No location found for: {location}"
+        )
 
     coordinates = features[0]["geometry"]["coordinates"]
     return coordinates[1], coordinates[0]
